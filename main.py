@@ -2,11 +2,91 @@ from flask import Flask, request, render_template, jsonify  # Import jsonify
 import numpy as np
 import pandas as pd
 import pickle
-
-
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import mysql.connector
 # flask app
 app = Flask(__name__)
+app.secret_key = 'Ayush_Gupta'
+# Database connection
+def get_db_connection():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",  
+        password="root",  
+        database="aihealthmate"   
+    )
 
+
+
+# Route for login page
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        # Establish connection to the database
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Query the database for the user
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+
+        # Close the connection
+        cursor.close()
+        conn.close()
+
+        # Check if user exists and password is correct
+        if user and check_password_hash(user['password'], password):
+            session['username'] = user['username']
+            flash('Login successful!', 'success')
+            return redirect(url_for('index'))
+        else:
+            flash('Invalid username or password', 'danger')
+
+    return render_template('logging.html')
+
+# Route for registration page
+@app.route('/register', methods=['POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        password = request.form['password']
+        
+        # Hash the password
+        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
+        
+        # Establish connection to the database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check if the user already exists
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        existing_user = cursor.fetchone()
+
+        if existing_user:
+            flash('Username already exists', 'danger')
+            cursor.close()
+            conn.close()
+            return redirect(url_for('register'))
+
+        # Insert the new user into the database
+        cursor.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)", 
+                       (username, email, hashed_password))
+        conn.commit()
+
+        # Close the connection
+        cursor.close()
+        conn.close()
+
+        flash('Account created successfully!', 'success')
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
 
 
 # load databasedataset===================================
@@ -59,39 +139,71 @@ def get_predicted_value(patient_symptoms):
 # creating routes========================================
 
 
-@app.route("/")
+# Home route
+@app.route('/')
 def index():
-    return render_template("index.html")
+    if 'username' in session:
+        return render_template('index.html', username=session['username'])
+    else:
+        return redirect(url_for('login'))
 
 # Define a route for the home page
 @app.route('/predict', methods=['GET', 'POST'])
 def home():
     if request.method == 'POST':
         symptoms = request.form.get('symptoms')
-        # mysysms = request.form.get('mysysms')
-        # print(mysysms)
         print(symptoms)
-        if symptoms =="Symptoms":
+        if symptoms == "Symptoms":
             message = "Please either write symptoms or you have written misspelled symptoms"
             return render_template('index.html', message=message)
         else:
-
-            # Split the user's input into a list of symptoms (assuming they are comma-separated)
             user_symptoms = [s.strip() for s in symptoms.split(',')]
-            # Remove any extra characters, if any
             user_symptoms = [symptom.strip("[]' ") for symptom in user_symptoms]
             predicted_disease = get_predicted_value(user_symptoms)
             dis_des, precautions, medications, rec_diet, workout = helper(predicted_disease)
 
-            my_precautions = []
-            for i in precautions[0]:
-                my_precautions.append(i)
+            my_precautions = [str(i) for i in precautions[0]]  # Ensure all items are strings
+            medications = [str(med) for med in medications]  # Ensure all items are strings
+
+            # Save to database
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO history (username, predicted_disease, precautions, medications, prediction_date ) 
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (session['username'], predicted_disease, ', '.join(my_precautions), ', '.join(medications)))
+            conn.commit()
+            cursor.close()
+            conn.close()
 
             return render_template('index.html', predicted_disease=predicted_disease, dis_des=dis_des,
                                    my_precautions=my_precautions, medications=medications, my_diet=rec_diet,
                                    workout=workout)
 
     return render_template('index.html')
+
+
+@app.route('/history')
+def history():
+    if 'username' in session:
+        username = session['username']
+        
+        # Establish connection to the database
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Fetch the prediction history for the logged-in user
+        cursor.execute("SELECT * FROM history WHERE username = %s ORDER BY prediction_date DESC", (username,))
+        history = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return render_template('history.html', history=history)
+    else:
+        flash('You need to log in to view your history.', 'danger')
+        return redirect(url_for('login'))
+
 
 
 
